@@ -16,7 +16,7 @@ This project provides a speed-optimized Python Playwright script for automated l
 - Navigates quickly to live match pages using fast page readiness strategy.
 - Finds and clicks a target odds element using your selector.
 - Enters stake amount in bet slip and clicks Place Bet or Confirm Bet.
-- Supports manual selection mode where you choose teams/markets yourself, then trigger instant submit from browser hotkey.
+- Supports manual selection mode where you choose teams/markets yourself, then an in-browser watcher auto-submits when the betslip becomes valid.
 - Prints milestone logs for each critical step.
 - Handles common runtime issues such as missing markets, locked odds, or timeout.
 
@@ -65,9 +65,9 @@ Arguments:
 - --target-market-selector: Selector for the specific odds button.
 - --stake: Stake amount as number.
 
-### 3) Manual select + instant submit (new)
+### 3) Manual select + auto-submit watcher (new)
 
-Use this mode when you want to physically pick teams/markets in the browser, then submit instantly with a browser hotkey.
+Use this mode when you want to physically pick teams/markets in the browser, then let the script auto-click Place/Confirm as soon as the betslip becomes valid.
 
     .\.venv\Scripts\python.exe .\sportybet_fast_bet.py arm-submit
 
@@ -79,18 +79,53 @@ Optional stake prefill:
 
     .\.venv\Scripts\python.exe .\sportybet_fast_bet.py arm-submit --stake 500
 
-Optional custom hotkey (default is F7):
+Optional manual override hotkey:
 
     .\.venv\Scripts\python.exe .\sportybet_fast_bet.py arm-submit --stake 500 --hotkey F9
+
+Optional repeat mode:
+
+    .\.venv\Scripts\python.exe .\sportybet_fast_bet.py arm-submit --stake 500 --repeat 2 --repeat-delay-ms 150
 
 How it works:
 
 - Opens logged-in headed browser using saved auth_state.json.
 - You manually select match markets in the live UI.
 - If --stake is provided, script pre-fills stake.
-- When ready, focus the browser and press the hotkey (default F7).
-- Script triggers immediate in-page Place/Confirm click (near-zero extra buffer).
-- If no success confirmation appears, script stays armed so you can adjust and press hotkey again.
+- The watcher keeps checking for a valid Place/Confirm state and clicks it immediately.
+- If a hotkey is provided, it acts as an optional manual override, not the main trigger.
+- If no success confirmation appears, script stays armed so you can adjust or wait for the slip to become valid again.
+- If --repeat is greater than 1, the script fires a second submit burst after the first confirmed success, then keeps watching if more repeats are requested.
+- If --repeat is greater than 1, the script also tries to reselect the same captured market hints before the next submission burst.
+
+Latency profiling (built in):
+
+- After each submit attempt, the script prints:
+    - betslip valid detected timestamp
+    - hotkey detected timestamp
+    - submit click fired timestamp
+    - first related API request timestamp
+    - first related API response timestamp
+    - first success/error toast timestamp
+- It also prints stage deltas:
+    - hotkey -> click
+    - click -> request
+    - request -> response
+    - response -> toast
+
+How to use the metrics:
+
+- Large ready -> click: the watcher waited before the button became enabled, or the page was slow to expose the valid button.
+- Large hotkey -> click: manual override input/capture issue (change hotkey or focus browser).
+- Large click -> request: UI/client-side delay before request dispatch.
+- Large request -> response: network/backend latency (not client-rendering).
+- Large response -> toast: front-end rendering/notification delay.
+
+Repeat mode notes:
+
+- `--repeat 2` means two confirmed submissions for the same live selection.
+- `--repeat-delay-ms` gives a short pause before the second submit burst.
+- If the market or slip clears after the first submission, the script tries to reselect the same captured market automatically before the second attempt.
 
 Recommended hotkeys:
 
