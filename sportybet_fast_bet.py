@@ -423,6 +423,11 @@ def inject_browser_hotkey_submit(
             win.__sb_last_stake_apply_at = 0;
             win.__sb_last_stake_target = "";
             win.__sb_last_stake_note = "";
+            win.__sb_market_click_count = Number(win.__sb_market_click_count || 0);
+            win.__sb_last_market_clicked_at = Number(win.__sb_last_market_clicked_at || 0);
+            if (typeof win.__sb_waiting_for_next_market !== "boolean") {
+                win.__sb_waiting_for_next_market = true;
+            }
 
             const hotkeyValue = String(hotkey || "").trim().toUpperCase();
             const configuredStake =
@@ -496,6 +501,7 @@ def inject_browser_hotkey_submit(
                 if (!btn || win.__sb_submit_fired) return;
                 btn.click();
                 win.__sb_submit_fired = true;
+                win.__sb_waiting_for_next_market = true;
                 win.__sb_submit_fired_at = Date.now();
                 win.__sb_submit_attempt_count = (win.__sb_submit_attempt_count || 0) + 1;
                 win.__sb_last_clicked_button_text = (btn.textContent || "").trim();
@@ -515,6 +521,57 @@ def inject_browser_hotkey_submit(
                         follow.click();
                     }
                 }, 80);
+            };
+
+            const normalizeText = (text) => String(text || "").replace(/\\s+/g, " ").trim().toLowerCase();
+            const isInsideBetSlip = (el) => {
+                if (!el || !el.closest) return false;
+                return Boolean(el.closest([
+                    "[data-testid*='betslip' i]",
+                    "[class*='betslip' i]",
+                    "[id*='betslip' i]",
+                    "[data-testid*='coupon' i]",
+                    "[class*='coupon' i]",
+                    "[id*='coupon' i]",
+                ].join(",")));
+            };
+            const looksLikeSubmit = (el) => {
+                const text = normalizeText(el.innerText || el.textContent || "");
+                if (text.includes("place bet") || text.includes("confirm")) return true;
+                if (text === "place" || text === "accept" || text === "continue") return true;
+                const attrs = [
+                    el.getAttribute("data-testid") || "",
+                    el.getAttribute("class") || "",
+                    el.getAttribute("id") || "",
+                ].join(" ").toLowerCase();
+                return attrs.includes("place-bet") || attrs.includes("submit");
+            };
+            const onMarketClick = (ev) => {
+                const raw = ev.target;
+                if (!raw || !raw.closest) return;
+                const el = raw.closest([
+                    "[data-odds-id]",
+                    "[data-testid*='odd' i]",
+                    "[class*='odd' i]",
+                    "[data-testid*='market' i]",
+                    "[class*='market' i]",
+                    "button",
+                    "[role='button']",
+                    "a",
+                ].join(","));
+                if (!el || isInsideBetSlip(el) || looksLikeSubmit(el)) return;
+
+                win.__sb_market_click_count = Number(win.__sb_market_click_count || 0) + 1;
+                win.__sb_last_market_clicked_at = Date.now();
+                win.__sb_submit_fired = false;
+                win.__sb_waiting_for_next_market = false;
+                win.__sb_submit_ready_count = 0;
+                win.__sb_submit_attempt_count = 0;
+                win.__sb_submit_ready_at = 0;
+                win.__sb_submit_fired_at = 0;
+                win.__sb_last_clicked_button_text = "";
+                win.__sb_submit_trigger_mode = "";
+                win.__sb_last_submit_error = "";
             };
 
             const markReady = () => {
@@ -711,6 +768,8 @@ def inject_browser_hotkey_submit(
 
             const autoWatch = () => {
                 if (win.__sb_submit_fired) return;
+                if (win.__sb_waiting_for_next_market) return;
+                if (win.__sb_last_market_clicked_at && Date.now() - win.__sb_last_market_clicked_at < 80) return;
                 const btn = markReady();
                 if (btn) {
                     if (!applyConfiguredStake()) {
@@ -755,6 +814,12 @@ def inject_browser_hotkey_submit(
                 document.addEventListener("keydown", onKey, true);
                 window.addEventListener("keydown", onKey, true);
             }
+
+            if (win.__sb_market_click_handler) {
+                document.removeEventListener("click", win.__sb_market_click_handler, true);
+            }
+            win.__sb_market_click_handler = onMarketClick;
+            document.addEventListener("click", onMarketClick, true);
 
             if (win.__sb_submit_watch_interval) {
                 clearInterval(win.__sb_submit_watch_interval);
@@ -936,10 +1001,40 @@ def arm_manual_submit(
             last_error = ""
             last_submit_attempt_count = 0
             last_submit_attempt_at_ms: Optional[float] = None
+            last_market_click_count = 0
+            completed_submissions = 0
+
+            def _prepare_for_next_manual_bet() -> None:
+                nonlocal last_ready_count, last_error, last_submit_attempt_count, last_submit_attempt_at_ms
+                try:
+                    page.evaluate(
+                        """() => {
+                            const win = window;
+                            win.__sb_submit_attempt_count = 0;
+                            win.__sb_submit_ready_count = 0;
+                            win.__sb_submit_ready_at = 0;
+                            win.__sb_submit_fired_at = 0;
+                            win.__sb_last_clicked_button_text = "";
+                            win.__sb_submit_trigger_mode = "";
+                            win.__sb_last_submit_error = "";
+                            win.__sb_waiting_for_next_market = true;
+                        }"""
+                    )
+                except Error:
+                    pass
+                last_ready_count = 0
+                last_error = ""
+                last_submit_attempt_count = 0
+                last_submit_attempt_at_ms = None
+                _reset_latency_capture(None)
 
             def _handle_confirmed_submission() -> bool:
+                nonlocal completed_submissions
+                completed_submissions += 1
                 log("[+] Bet Successfully Submitted to Account History")
-                return True
+                log("[+] Still armed; select another market when ready.")
+                _prepare_for_next_manual_bet()
+                return False
 
             # Long-running watch window for live play.
             while time.monotonic() - start < 3600:
@@ -963,8 +1058,19 @@ def arm_manual_submit(
                             stakeApplyAt: Number(window.__sb_last_stake_apply_at || 0),
                             stakeTarget: String(window.__sb_last_stake_target || ""),
                             stakeNote: String(window.__sb_last_stake_note || ""),
+                            marketClickCount: Number(window.__sb_market_click_count || 0),
                         })"""
                     )
+
+                    market_click_count = int(status.get("marketClickCount", 0))
+                    if market_click_count > last_market_click_count:
+                        last_market_click_count = market_click_count
+                        last_ready_count = 0
+                        last_error = ""
+                        last_submit_attempt_count = 0
+                        last_submit_attempt_at_ms = None
+                        _reset_latency_capture(None)
+                        log("[+] New market click detected; watcher re-armed.")
 
                     ready_count = int(status.get("readyCount", 0))
                     if ready_count > last_ready_count:
@@ -1124,7 +1230,8 @@ def arm_manual_submit(
 
                         if rejected:
                             log(f"[!] Bet rejection signal detected: {toast_label}")
-                            log("[!] Still armed; adjust selection and press hotkey again.")
+                            log("[!] Still armed; select another market and try again.")
+                            _prepare_for_next_manual_bet()
                             continue
 
                         log("[!] No success confirmation detected. Still armed; select a market or wait for the slip to become valid again.")
@@ -1156,8 +1263,8 @@ def arm_manual_submit(
                         for signal in late_error_signals:
                             if page.locator(signal).first.is_visible(timeout=50):
                                 log(f"[!] Late rejection detected ({signal.replace('text=', '')})")
-                                log("[!] Still armed; adjust selection and try again.")
-                                last_submit_attempt_count = 0
+                                log("[!] Still armed; select another market and try again.")
+                                _prepare_for_next_manual_bet()
                                 break
                 except Error:
                     # Ignore transient navigation/frame reloads and keep watching.
