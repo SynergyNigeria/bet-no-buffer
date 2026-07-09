@@ -396,227 +396,6 @@ def click_submit_fast(page: Page) -> None:
         submit_button.click(timeout=1200)
 
 
-def trigger_submit_attempt(
-    page: Page,
-    trigger_mode: str = "repeat-burst",
-    stake_amount: Optional[float] = None,
-) -> bool:
-    """Click the current submit button and stamp the page state for latency tracking."""
-    if stake_amount is not None:
-        try:
-            fill_stake_only(page, stake_amount)
-        except RuntimeError:
-            return False
-
-        stake_input = first_visible(
-            page,
-            [
-                "[data-testid='betslip-stake-input'] input",
-                "[data-testid*='stake' i] input",
-                "[class*='stake' i] input",
-                "[id*='stake' i] input",
-                "input[placeholder*='Stake' i]",
-                "input[aria-label*='Stake' i]",
-                "input[placeholder*='Amount' i]",
-                "input[aria-label*='Amount' i]",
-                "input[type='number']",
-                "input[inputmode='numeric']",
-                "input[inputmode='decimal']",
-                "input[type='tel']",
-                "input[type='text']",
-            ],
-        )
-        if stake_input is None:
-            return False
-
-        raw_value = stake_input.input_value(timeout=500)
-        numeric_text = "".join(ch for ch in raw_value if ch.isdigit() or ch == ".")
-        try:
-            if abs(float(numeric_text) - float(stake_amount)) >= 0.001:
-                return False
-        except ValueError:
-            return False
-
-    submit_button = find_submit_button(page)
-    if submit_button is None:
-        return False
-
-    if not submit_button.is_enabled():
-        return False
-
-    clicked_text = (submit_button.text_content() or "").strip()
-    click_submit_fast(page)
-    page.evaluate(
-        """({ triggerMode, clickedText }) => {
-            const win = window;
-            win.__sb_submit_fired = true;
-            win.__sb_submit_fired_at = Date.now();
-            win.__sb_submit_attempt_count = Number(win.__sb_submit_attempt_count || 0) + 1;
-            win.__sb_last_clicked_button_text = String(clickedText || "");
-            win.__sb_submit_trigger_mode = String(triggerMode || "repeat-burst");
-            win.__sb_last_submit_error = "";
-        }""",
-        {"triggerMode": trigger_mode, "clickedText": clicked_text},
-    )
-    return True
-
-
-def capture_market_selection_hints(page: Page) -> list[str]:
-    """Best-effort capture of visible market/selection text to reselect the same chip later."""
-    hints = page.evaluate(
-        """() => {
-            const badTexts = new Set([
-                "place bet",
-                "confirm bet",
-                "confirm",
-                "place",
-                "stake",
-                "submit",
-                "accept",
-                "continue",
-                "cancel",
-                "remove",
-                "clear",
-                "subtotal",
-                "total",
-                "possible winnings",
-                "possible win",
-                "odds",
-            ]);
-
-            const containers = Array.from(document.querySelectorAll(
-                [
-                    "[data-testid*='betslip']",
-                    "[class*='betslip']",
-                    "[id*='betslip']",
-                    "[data-testid*='selection']",
-                    "[class*='selection']",
-                    "[id*='selection']",
-                    "[data-testid*='coupon']",
-                    "[class*='coupon']",
-                    "[id*='coupon']",
-                ].join(",")
-            ));
-
-            const results = [];
-            const seen = new Set();
-
-            const isVisible = (el) => {
-                if (!el) return false;
-                const style = window.getComputedStyle(el);
-                return style && style.display !== "none" && style.visibility !== "hidden" && el.offsetParent !== null;
-            };
-
-            const normalize = (text) => text.replace(/\\s+/g, " ").trim();
-
-            const scoreElement = (el, text) => {
-                let score = 0;
-                const attrs = [
-                    el.getAttribute("data-testid") || "",
-                    el.getAttribute("class") || "",
-                    el.getAttribute("id") || "",
-                    el.getAttribute("aria-label") || "",
-                    el.getAttribute("title") || "",
-                ].join(" ").toLowerCase();
-
-                if (attrs.includes("betslip")) score += 5;
-                if (attrs.includes("selection")) score += 5;
-                if (attrs.includes("selected")) score += 4;
-                if (attrs.includes("coupon")) score += 3;
-                if (attrs.includes("market")) score += 2;
-                if (el.tagName === "BUTTON") score += 2;
-                if (el.getAttribute("aria-pressed") === "true") score += 3;
-                if (el.getAttribute("aria-selected") === "true") score += 3;
-                if (text.length <= 55) score += 1;
-                return score;
-            };
-
-            for (const root of containers) {
-                const elements = Array.from(root.querySelectorAll("button, [role='button'], a, span, div"));
-                for (const el of elements) {
-                    if (!isVisible(el)) continue;
-                    const text = normalize(el.innerText || el.textContent || "");
-                    if (!text) continue;
-                    if (text.length > 70) continue;
-                    const lower = text.toLowerCase();
-                    if (badTexts.has(lower)) continue;
-                    if (lower.includes("place bet") || lower.includes("confirm")) continue;
-                    if (lower.includes("stake") || lower.includes("odds")) continue;
-
-                    const score = scoreElement(el, text);
-                    if (score <= 0) continue;
-                    if (seen.has(text)) continue;
-                    seen.add(text);
-                    results.push({ text, score });
-                }
-            }
-
-            results.sort((a, b) => b.score - a.score || a.text.length - b.text.length);
-            return results.slice(0, 5).map((item) => item.text);
-        }"""
-    )
-    if not isinstance(hints, list):
-        return []
-    cleaned: list[str] = []
-    for hint in hints:
-        if not isinstance(hint, str):
-            continue
-        text = hint.strip()
-        if not text:
-            continue
-        if text not in cleaned:
-            cleaned.append(text)
-    return cleaned
-
-
-def reselect_market_from_hints(page: Page, hints: list[str]) -> bool:
-    """Try to re-click the same market chip or matching market tile using captured text hints."""
-    if not hints:
-        return False
-
-    candidate_scopes = [
-        "[data-testid*='market']",
-        "[class*='market']",
-        "[id*='market']",
-        "[data-testid*='selection']",
-        "[class*='selection']",
-        "[id*='selection']",
-        "button",
-        "[role='button']",
-        "a",
-        "div",
-        "span",
-    ]
-
-    for hint in hints:
-        exact_locators = [
-            page.get_by_text(hint, exact=True),
-            page.get_by_role("button", name=hint),
-        ]
-
-        for locator in exact_locators:
-            try:
-                candidate = locator.first
-                if candidate.count() > 0 and candidate.is_visible():
-                    candidate.scroll_into_view_if_needed()
-                    candidate.click(timeout=1000)
-                    return True
-            except Error:
-                pass
-
-        for scope in candidate_scopes:
-            try:
-                candidate = page.locator(scope).filter(has_text=hint).first
-                if candidate.count() > 0 and candidate.is_visible():
-                    candidate.scroll_into_view_if_needed()
-                    candidate.click(timeout=1000)
-                    return True
-            except Error:
-                continue
-
-    return False
-
-
 def inject_browser_hotkey_submit(
     page: Page,
     hotkey: Optional[str] = None,
@@ -736,121 +515,6 @@ def inject_browser_hotkey_submit(
                         follow.click();
                     }
                 }, 80);
-            };
-
-            const normalize = (text) => String(text || "").replace(/\\s+/g, " ").trim();
-            const isInsideBetSlip = (el) => {
-                if (!el || !el.closest) return false;
-                return Boolean(el.closest([
-                    "[data-testid*='betslip']",
-                    "[class*='betslip']",
-                    "[id*='betslip']",
-                    "[data-testid*='coupon']",
-                    "[class*='coupon']",
-                    "[id*='coupon']",
-                ].join(",")));
-            };
-
-            const looksLikeSubmitControl = (el, text) => {
-                const lower = normalize(text).toLowerCase();
-                if (lower.includes("place bet") || lower.includes("confirm")) return true;
-                if (lower === "place" || lower === "accept" || lower === "continue") return true;
-                const attrs = [
-                    el && el.getAttribute ? el.getAttribute("data-testid") || "" : "",
-                    el && el.getAttribute ? el.getAttribute("class") || "" : "",
-                    el && el.getAttribute ? el.getAttribute("id") || "" : "",
-                ].join(" ").toLowerCase();
-                return attrs.includes("place-bet") || attrs.includes("submit");
-            };
-
-            const buildMarketInfo = (el) => {
-                const dataset = {};
-                if (el && el.dataset) {
-                    for (const key of Object.keys(el.dataset)) {
-                        dataset[key] = el.dataset[key];
-                    }
-                }
-                const rect = el.getBoundingClientRect ? el.getBoundingClientRect() : null;
-                return {
-                    text: normalize(el.innerText || el.textContent || ""),
-                    tag: el.tagName || "",
-                    id: el.id || "",
-                    className: String(el.className || ""),
-                    ariaLabel: el.getAttribute ? el.getAttribute("aria-label") || "" : "",
-                    title: el.getAttribute ? el.getAttribute("title") || "" : "",
-                    dataTestId: el.getAttribute ? el.getAttribute("data-testid") || "" : "",
-                    dataOddsId: el.getAttribute ? el.getAttribute("data-odds-id") || "" : "",
-                    dataset,
-                    x: rect ? rect.left + rect.width / 2 : 0,
-                    y: rect ? rect.top + rect.height / 2 : 0,
-                    capturedAt: Date.now(),
-                };
-            };
-
-            const onMarketClickCapture = (ev) => {
-                const raw = ev.target;
-                if (!raw || !raw.closest) return;
-                const el = raw.closest("button, [role='button'], a, [data-odds-id], [data-testid*='market'], [class*='market']");
-                if (!el || !isEnabledVisible(el)) return;
-                const text = normalize(el.innerText || el.textContent || "");
-                if (!text && !el.getAttribute("data-odds-id") && !el.getAttribute("data-testid")) return;
-                if (isInsideBetSlip(el)) return;
-                if (looksLikeSubmitControl(el, text)) return;
-
-                win.__sb_last_market_element = el;
-                win.__sb_last_market_info = buildMarketInfo(el);
-            };
-
-            const clickElement = (el) => {
-                if (!isEnabledVisible(el)) return false;
-                try {
-                    el.scrollIntoView({ block: "center", inline: "center" });
-                } catch (e) {}
-                el.click();
-                return true;
-            };
-
-            win.__sb_reclick_last_market = () => {
-                const saved = win.__sb_last_market_element;
-                if (saved && saved.isConnected && clickElement(saved)) {
-                    return true;
-                }
-
-                const info = win.__sb_last_market_info || {};
-                const candidates = [];
-                if (info.dataOddsId) candidates.push(`[data-odds-id="${CSS.escape(info.dataOddsId)}"]`);
-                if (info.dataTestId) candidates.push(`[data-testid="${CSS.escape(info.dataTestId)}"]`);
-
-                for (const [key, value] of Object.entries(info.dataset || {})) {
-                    if (value) candidates.push(`[data-${key.replace(/[A-Z]/g, (m) => "-" + m.toLowerCase())}="${CSS.escape(String(value))}"]`);
-                }
-
-                for (const selector of candidates) {
-                    const el = document.querySelector(selector);
-                    if (el && clickElement(el)) return true;
-                }
-
-                const text = normalize(info.text || info.ariaLabel || info.title || "");
-                if (text) {
-                    const controls = Array.from(document.querySelectorAll("button, [role='button'], a, [data-odds-id]"));
-                    const exact = controls.find((el) => !isInsideBetSlip(el) && normalize(el.innerText || el.textContent || el.getAttribute("aria-label") || "") === text);
-                    if (exact && clickElement(exact)) return true;
-
-                    const loose = controls.find((el) => {
-                        if (isInsideBetSlip(el)) return false;
-                        const value = normalize(el.innerText || el.textContent || el.getAttribute("aria-label") || "");
-                        return value && (value.includes(text) || text.includes(value));
-                    });
-                    if (loose && clickElement(loose)) return true;
-                }
-
-                if (Number(info.x || 0) > 0 && Number(info.y || 0) > 0) {
-                    const el = document.elementFromPoint(Number(info.x), Number(info.y));
-                    const control = el && el.closest ? el.closest("button, [role='button'], a, [data-odds-id]") : null;
-                    if (control && !isInsideBetSlip(control) && clickElement(control)) return true;
-                }
-
-                return false;
             };
 
             const markReady = () => {
@@ -1056,7 +720,6 @@ def inject_browser_hotkey_submit(
                     fireSubmit(btn, "auto-watch");
                 }
             };
-            win.__sb_force_auto_submit_check = autoWatch;
 
             if (hotkeyValue) {
                 const onKey = (ev) => {
@@ -1093,12 +756,6 @@ def inject_browser_hotkey_submit(
                 window.addEventListener("keydown", onKey, true);
             }
 
-            if (win.__sb_market_click_capture_handler) {
-                document.removeEventListener("click", win.__sb_market_click_capture_handler, true);
-            }
-            win.__sb_market_click_capture_handler = onMarketClickCapture;
-            document.addEventListener("click", onMarketClickCapture, true);
-
             if (win.__sb_submit_watch_interval) {
                 clearInterval(win.__sb_submit_watch_interval);
             }
@@ -1126,64 +783,10 @@ def inject_browser_hotkey_submit(
     )
 
 
-def reset_submit_watcher_state(page: Page) -> None:
-    """Reset watcher state so the same slip can be submitted again."""
-    page.evaluate(
-        """() => {
-            const win = window;
-            win.__sb_submit_fired = false;
-            win.__sb_submit_ready_count = 0;
-            win.__sb_last_submit_error = "";
-            win.__sb_submit_attempt_count = 0;
-            win.__sb_last_clicked_button_text = "";
-            win.__sb_submit_ready_at = 0;
-            win.__sb_submit_trigger_mode = "";
-            win.__sb_submit_fired_at = 0;
-        }"""
-    )
-
-
-def reselect_last_market_fast(page: Page) -> bool:
-    """Ask the in-browser watcher to re-click the last market the user selected."""
-    try:
-        return bool(
-            page.evaluate(
-                """() => {
-                    if (typeof window.__sb_reclick_last_market !== "function") {
-                        return false;
-                    }
-                    return Boolean(window.__sb_reclick_last_market());
-                }"""
-            )
-        )
-    except Error:
-        return False
-
-
-def schedule_browser_submit_checks(page: Page) -> None:
-    """Nudge the in-browser watcher after repeat reselects while the slip rebuilds."""
-    try:
-        page.evaluate(
-            """() => {
-                const run = () => {
-                    if (typeof window.__sb_force_auto_submit_check === "function") {
-                        window.__sb_force_auto_submit_check();
-                    }
-                };
-                run();
-                [40, 100, 200, 400, 800].forEach((delay) => setTimeout(run, delay));
-            }"""
-        )
-    except Error:
-        pass
-
-
 def arm_manual_submit(
     match_url: Optional[str] = None,
     stake_amount: Optional[float] = None,
     fire_hotkey: Optional[str] = None,
-    repeat_count: int = 1,
-    repeat_delay_ms: int = 250,
     auth_state_path: Path = AUTH_STATE_PATH,
 ) -> bool:
     """
@@ -1313,9 +916,6 @@ def arm_manual_submit(
                 except RuntimeError as ex:
                     log(f"[!] Stake prefill skipped: {ex}")
 
-            target_repeats = max(1, repeat_count)
-            completed_submissions = 0
-
             def _rearm_hotkey(_frame=None) -> None:
                 # Re-attach after route/page changes so hotkey stays active while browsing markets.
                 try:
@@ -1336,46 +936,10 @@ def arm_manual_submit(
             last_error = ""
             last_submit_attempt_count = 0
             last_submit_attempt_at_ms: Optional[float] = None
-            last_market_hints: list[str] = []
 
             def _handle_confirmed_submission() -> bool:
-                """Return True when all requested repeats are complete."""
-                nonlocal completed_submissions
-                nonlocal last_ready_count, last_error, last_submit_attempt_count, last_submit_attempt_at_ms
-
                 log("[+] Bet Successfully Submitted to Account History")
-                completed_submissions += 1
-                if completed_submissions >= target_repeats:
-                    return True
-
-                log(
-                    f"[+] Repeat cycle {completed_submissions}/{target_repeats} complete; re-arming for another submission."
-                )
-                time.sleep(max(0, repeat_delay_ms) / 1000.0)
-                reset_submit_watcher_state(page)
-                last_ready_count = 0
-                last_error = ""
-                last_submit_attempt_count = 0
-                last_submit_attempt_at_ms = None
-                _reset_latency_capture(None)
-
-                reselected = False
-                if reselect_last_market_fast(page):
-                    reselected = True
-                    log("[+] Re-selected the last clicked market for repeat submission.")
-                elif last_market_hints and reselect_market_from_hints(page, last_market_hints):
-                    reselected = True
-                    log("[+] Re-selected the captured market for repeat submission.")
-                else:
-                    log("[!] Could not reselect the captured market automatically; watcher remains armed.")
-
-                if reselected:
-                    schedule_browser_submit_checks(page)
-                    log("[+] Repeat watcher scheduled; waiting for betslip to become submit-ready.")
-                else:
-                    log("[!] Repeat watcher remains armed; select the market manually if needed.")
-
-                return False
+                return True
 
             # Long-running watch window for live play.
             while time.monotonic() - start < 3600:
@@ -1434,11 +998,6 @@ def arm_manual_submit(
                         stake_after = str(status.get("stakeAfter", "")).strip()
                         stake_target = str(status.get("stakeTarget", "")).strip() or "n/a"
                         stake_note = str(status.get("stakeNote", "")).strip() or "n/a"
-
-                        captured_hints = capture_market_selection_hints(page)
-                        if captured_hints:
-                            last_market_hints = captured_hints
-                            log(f"[+] Captured market hints for repeat: {', '.join(last_market_hints[:3])}")
 
                         _reset_latency_capture(submit_ready_at_ms or submit_fired_at_ms or _now_ms())
 
@@ -1747,22 +1306,6 @@ def prompt_float(label: str, default: Optional[float] = None, required: bool = F
         return value
 
 
-def prompt_int(label: str, default: int, minimum: int = 1) -> int:
-    while True:
-        raw = input(f"{label} [{default}]: ").strip()
-        if not raw:
-            return default
-        try:
-            value = int(raw)
-        except ValueError:
-            log("[!] Enter a whole number.")
-            continue
-        if value < minimum:
-            log(f"[!] Enter {minimum} or higher.")
-            continue
-        return value
-
-
 def run_interactive_menu() -> int:
     auth_status = "found" if AUTH_STATE_PATH.exists() else "missing"
 
@@ -1786,15 +1329,11 @@ def run_interactive_menu() -> int:
     if choice == "2":
         start_url = prompt_text("Start URL", default=SPORTYBET_HOME)
         stake = prompt_float("Stake amount", default=350.0)
-        repeat_count = prompt_int("Repeat count", default=1, minimum=1)
-        repeat_delay_ms = prompt_int("Repeat delay in ms", default=150, minimum=0)
         hotkey = prompt_text("Optional hotkey override, leave blank for auto only", default="")
         ok = arm_manual_submit(
             match_url=start_url,
             stake_amount=stake,
             fire_hotkey=(hotkey or None),
-            repeat_count=repeat_count,
-            repeat_delay_ms=repeat_delay_ms,
         )
         return 0 if ok else 1
 
@@ -1862,21 +1401,6 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Optional browser key override for manual submit (auto-submit watcher is always on)",
     )
-    arm.add_argument(
-        "--repeat",
-        required=False,
-        type=int,
-        default=1,
-        help="How many successful submissions to place for the same selection (default: 1)",
-    )
-    arm.add_argument(
-        "--repeat-delay-ms",
-        required=False,
-        type=int,
-        default=150,
-        help="Delay before repeat burst in milliseconds (default: 150)",
-    )
-
     return parser.parse_args()
 
 
@@ -1903,8 +1427,6 @@ def main() -> int:
             match_url=(args.match_url or args.start_url),
             stake_amount=args.stake,
             fire_hotkey=args.hotkey,
-            repeat_count=args.repeat,
-            repeat_delay_ms=args.repeat_delay_ms,
         )
         return 0 if ok else 1
 
