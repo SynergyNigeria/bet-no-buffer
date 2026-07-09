@@ -297,8 +297,17 @@ def fill_stake_and_submit(page: Page, stake_amount: float) -> None:
     # Candidate selectors for stake input across common slip variants.
     stake_input_candidates = [
         "input[type='number']",
+        "input[type='tel']",
+        "input[type='text']",
+        "input[inputmode='numeric']",
+        "input[inputmode='decimal']",
         "input[placeholder*='Stake' i]",
         "input[aria-label*='Stake' i]",
+        "input[placeholder*='Amount' i]",
+        "input[aria-label*='Amount' i]",
+        "[data-testid*='stake' i] input",
+        "[class*='stake' i] input",
+        "[id*='stake' i] input",
         "[data-testid='betslip-stake-input'] input",
     ]
 
@@ -335,8 +344,17 @@ def fill_stake_only(page: Page, stake_amount: float) -> None:
     """Fill stake without submitting; useful for armed manual submit mode."""
     stake_input_candidates = [
         "input[type='number']",
+        "input[type='tel']",
+        "input[type='text']",
+        "input[inputmode='numeric']",
+        "input[inputmode='decimal']",
         "input[placeholder*='Stake' i]",
         "input[aria-label*='Stake' i]",
+        "input[placeholder*='Amount' i]",
+        "input[aria-label*='Amount' i]",
+        "[data-testid*='stake' i] input",
+        "[class*='stake' i] input",
+        "[id*='stake' i] input",
         "[data-testid='betslip-stake-input'] input",
     ]
 
@@ -378,8 +396,47 @@ def click_submit_fast(page: Page) -> None:
         submit_button.click(timeout=1200)
 
 
-def trigger_submit_attempt(page: Page, trigger_mode: str = "repeat-burst") -> bool:
+def trigger_submit_attempt(
+    page: Page,
+    trigger_mode: str = "repeat-burst",
+    stake_amount: Optional[float] = None,
+) -> bool:
     """Click the current submit button and stamp the page state for latency tracking."""
+    if stake_amount is not None:
+        try:
+            fill_stake_only(page, stake_amount)
+        except RuntimeError:
+            return False
+
+        stake_input = first_visible(
+            page,
+            [
+                "[data-testid='betslip-stake-input'] input",
+                "[data-testid*='stake' i] input",
+                "[class*='stake' i] input",
+                "[id*='stake' i] input",
+                "input[placeholder*='Stake' i]",
+                "input[aria-label*='Stake' i]",
+                "input[placeholder*='Amount' i]",
+                "input[aria-label*='Amount' i]",
+                "input[type='number']",
+                "input[inputmode='numeric']",
+                "input[inputmode='decimal']",
+                "input[type='tel']",
+                "input[type='text']",
+            ],
+        )
+        if stake_input is None:
+            return False
+
+        raw_value = stake_input.input_value(timeout=500)
+        numeric_text = "".join(ch for ch in raw_value if ch.isdigit() or ch == ".")
+        try:
+            if abs(float(numeric_text) - float(stake_amount)) >= 0.001:
+                return False
+        except ValueError:
+            return False
+
     submit_button = find_submit_button(page)
     if submit_button is None:
         return False
@@ -560,7 +617,11 @@ def reselect_market_from_hints(page: Page, hints: list[str]) -> bool:
     return False
 
 
-def inject_browser_hotkey_submit(page: Page, hotkey: Optional[str] = None) -> None:
+def inject_browser_hotkey_submit(
+    page: Page,
+    hotkey: Optional[str] = None,
+    desired_stake: Optional[float] = None,
+) -> None:
     """
     Inject an in-browser watcher that auto-clicks Place/Confirm as soon as the betslip becomes valid.
     If a hotkey is provided, it acts as an optional manual override.
@@ -568,7 +629,7 @@ def inject_browser_hotkey_submit(page: Page, hotkey: Optional[str] = None) -> No
     hotkey_normalized = (hotkey or "").strip().upper()
     page.evaluate(
         """
-        ({ hotkey }) => {
+        ({ hotkey, desiredStake }) => {
             const win = window;
             win.__sb_submit_fired = false;
             win.__sb_submit_ready_count = 0;
@@ -577,14 +638,33 @@ def inject_browser_hotkey_submit(page: Page, hotkey: Optional[str] = None) -> No
             win.__sb_last_clicked_button_text = "";
             win.__sb_submit_ready_at = 0;
             win.__sb_submit_trigger_mode = "";
+            win.__sb_last_stake_selector = "";
+            win.__sb_last_stake_before = "";
+            win.__sb_last_stake_after = "";
+            win.__sb_last_stake_apply_at = 0;
+            win.__sb_last_stake_target = "";
+            win.__sb_last_stake_note = "";
 
             const hotkeyValue = String(hotkey || "").trim().toUpperCase();
+            const configuredStake =
+                Number.isFinite(Number(desiredStake)) && Number(desiredStake) > 0
+                    ? Number(desiredStake)
+                    : null;
 
             const isEnabledVisible = (el) => (
                 el
                 && !el.disabled
                 && (el.getAttribute("aria-disabled") || "").toLowerCase() !== "true"
-                && el.offsetParent !== null
+                && (() => {
+                    const style = window.getComputedStyle(el);
+                    const rect = el.getBoundingClientRect();
+                    return style
+                        && style.display !== "none"
+                        && style.visibility !== "hidden"
+                        && Number(style.opacity || "1") > 0
+                        && rect.width > 0
+                        && rect.height > 0;
+                })()
             );
 
             const pickButton = () => {
@@ -785,13 +865,198 @@ def inject_browser_hotkey_submit(page: Page, hotkey: Optional[str] = None) -> No
                 return null;
             };
 
+            const applyConfiguredStake = () => {
+                if (configuredStake === null) return true;
+                const stakeSelectors = [
+                    "[data-testid='betslip-stake-input'] input",
+                    "[data-testid*='stake' i] input",
+                    "[class*='stake' i] input",
+                    "[id*='stake' i] input",
+                    "input[name*='stake' i]",
+                    "input[placeholder*='stake' i]",
+                    "input[aria-label*='stake' i]",
+                    "input[placeholder*='amount' i]",
+                    "input[aria-label*='amount' i]",
+                    "input[type='number']",
+                    "input[inputmode='decimal']",
+                    "input[inputmode='numeric']",
+                    "input[type='tel']",
+                    "input[type='text']",
+                    "textarea[placeholder*='stake' i]",
+                    "[contenteditable='true']",
+                ];
+
+                const parseStake = (value) => {
+                    const cleaned = String(value || "").replace(/[^\\d.]/g, "");
+                    if (!cleaned) return NaN;
+                    return Number(cleaned);
+                };
+
+                const stakeMatches = (value) => (
+                    Math.abs(parseStake(value) - configuredStake) < 0.001
+                );
+
+                const readInputValue = (el) => {
+                    if (!el) return "";
+                    if ("value" in el) return String(el.value || "");
+                    return String(el.textContent || "");
+                };
+
+                const setInputValue = (el, value) => {
+                    if ("value" in el) {
+                        try {
+                            const proto = el instanceof HTMLTextAreaElement
+                                ? window.HTMLTextAreaElement.prototype
+                                : window.HTMLInputElement.prototype;
+                            const nativeSetter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
+                            if (nativeSetter) {
+                                nativeSetter.call(el, value);
+                            } else {
+                                el.value = value;
+                            }
+                        } catch (e) {
+                            el.value = value;
+                        }
+                        return;
+                    }
+                    el.textContent = value;
+                };
+
+                const stakeContainers = Array.from(document.querySelectorAll([
+                    "[data-testid*='betslip' i]",
+                    "[class*='betslip' i]",
+                    "[id*='betslip' i]",
+                    "[data-testid*='coupon' i]",
+                    "[class*='coupon' i]",
+                    "[id*='coupon' i]",
+                    "[data-testid*='stake' i]",
+                    "[class*='stake' i]",
+                    "[id*='stake' i]",
+                ].join(",")));
+
+                const isUsableStakeField = (el) => {
+                    if (!isEnabledVisible(el)) return false;
+                    const type = String(el.getAttribute("type") || "").toLowerCase();
+                    if (["hidden", "password", "search", "checkbox", "radio", "submit", "button"].includes(type)) {
+                        return false;
+                    }
+                    return (
+                        el.matches("input, textarea, [contenteditable='true'], [role='textbox'], [role='spinbutton']")
+                    );
+                };
+
+                const scoreStakeField = (el) => {
+                    const attrs = [
+                        el.getAttribute("data-testid") || "",
+                        el.getAttribute("class") || "",
+                        el.getAttribute("id") || "",
+                        el.getAttribute("name") || "",
+                        el.getAttribute("placeholder") || "",
+                        el.getAttribute("aria-label") || "",
+                        el.getAttribute("title") || "",
+                        el.getAttribute("inputmode") || "",
+                        el.getAttribute("type") || "",
+                    ].join(" ").toLowerCase();
+                    let score = 0;
+                    if (attrs.includes("stake")) score += 30;
+                    if (attrs.includes("amount")) score += 12;
+                    if (attrs.includes("bet")) score += 8;
+                    if (attrs.includes("numeric") || attrs.includes("decimal")) score += 5;
+                    if (["number", "tel", "text"].includes(String(el.getAttribute("type") || "").toLowerCase())) {
+                        score += 3;
+                    }
+                    if (stakeContainers.some((container) => container.contains(el))) score += 10;
+                    if (!Number.isNaN(parseStake(readInputValue(el)))) score += 4;
+                    return score;
+                };
+
+                let input = null;
+                let selectedSelector = "";
+                for (const selector of stakeSelectors) {
+                    const candidate = document.querySelector(selector);
+                    if (candidate && isUsableStakeField(candidate)) {
+                        input = candidate;
+                        selectedSelector = selector;
+                        break;
+                    }
+                }
+
+                if (!input) {
+                    const fields = Array.from(document.querySelectorAll(
+                        "input, textarea, [contenteditable='true'], [role='textbox'], [role='spinbutton']"
+                    ))
+                        .filter(isUsableStakeField)
+                        .map((el) => ({ el, score: scoreStakeField(el) }))
+                        .filter((item) => item.score > 0)
+                        .sort((a, b) => b.score - a.score);
+                    if (fields.length > 0) {
+                        input = fields[0].el;
+                        selectedSelector = `scored-field:${fields[0].score}`;
+                    }
+                }
+
+                if (!input) {
+                    win.__sb_last_stake_selector = "none";
+                    win.__sb_last_stake_before = "";
+                    win.__sb_last_stake_after = "";
+                    win.__sb_last_stake_apply_at = Date.now();
+                    win.__sb_last_stake_target = String(configuredStake);
+                    win.__sb_last_stake_note = "no-visible-stake-input";
+                    return false;
+                }
+
+                const targetValue = String(configuredStake);
+                const beforeValue = readInputValue(input);
+                if (stakeMatches(beforeValue)) {
+                    win.__sb_last_stake_selector = selectedSelector;
+                    win.__sb_last_stake_before = beforeValue;
+                    win.__sb_last_stake_after = beforeValue;
+                    win.__sb_last_stake_apply_at = Date.now();
+                    win.__sb_last_stake_target = targetValue;
+                    win.__sb_last_stake_note = "already-target";
+                    return true;
+                }
+
+                try {
+                    input.focus();
+                } catch (e) {}
+
+                setInputValue(input, targetValue);
+
+                try {
+                    input.dispatchEvent(new InputEvent("input", {
+                        bubbles: true,
+                        cancelable: true,
+                        inputType: "insertReplacementText",
+                        data: targetValue,
+                    }));
+                } catch (e) {
+                    input.dispatchEvent(new Event("input", { bubbles: true }));
+                }
+                input.dispatchEvent(new Event("change", { bubbles: true }));
+                input.dispatchEvent(new Event("blur", { bubbles: true }));
+
+                win.__sb_last_stake_selector = selectedSelector;
+                win.__sb_last_stake_before = beforeValue;
+                win.__sb_last_stake_after = readInputValue(input);
+                win.__sb_last_stake_apply_at = Date.now();
+                win.__sb_last_stake_target = targetValue;
+                win.__sb_last_stake_note = stakeMatches(readInputValue(input)) ? "applied-waiting-for-next-pass" : "apply-mismatch";
+                return false;
+            };
+
             const autoWatch = () => {
                 if (win.__sb_submit_fired) return;
                 const btn = markReady();
                 if (btn) {
+                    if (!applyConfiguredStake()) {
+                        win.__sb_last_submit_error = `Stake not ready; wanted ${configuredStake}, saw ${win.__sb_last_stake_after || "n/a"}.`;
+                        return;
+                    }
                     fireSubmit(btn, "auto-watch");
                 }
             };
+            win.__sb_force_auto_submit_check = autoWatch;
 
             if (hotkeyValue) {
                 const onKey = (ev) => {
@@ -812,6 +1077,10 @@ def inject_browser_hotkey_submit(page: Page, hotkey: Optional[str] = None) -> No
                         return;
                     }
 
+                    if (!applyConfiguredStake()) {
+                        win.__sb_last_submit_error = `Stake not ready; wanted ${configuredStake}, saw ${win.__sb_last_stake_after || "n/a"}.`;
+                        return;
+                    }
                     fireSubmit(btn, "hotkey");
                 };
 
@@ -853,7 +1122,7 @@ def inject_browser_hotkey_submit(page: Page, hotkey: Optional[str] = None) -> No
             autoWatch();
         }
         """,
-        {"hotkey": hotkey_normalized},
+        {"hotkey": hotkey_normalized, "desiredStake": desired_stake},
     )
 
 
@@ -889,6 +1158,24 @@ def reselect_last_market_fast(page: Page) -> bool:
         )
     except Error:
         return False
+
+
+def schedule_browser_submit_checks(page: Page) -> None:
+    """Nudge the in-browser watcher after repeat reselects while the slip rebuilds."""
+    try:
+        page.evaluate(
+            """() => {
+                const run = () => {
+                    if (typeof window.__sb_force_auto_submit_check === "function") {
+                        window.__sb_force_auto_submit_check();
+                    }
+                };
+                run();
+                [40, 100, 200, 400, 800].forEach((delay) => setTimeout(run, delay));
+            }"""
+        )
+    except Error:
+        pass
 
 
 def arm_manual_submit(
@@ -1032,7 +1319,7 @@ def arm_manual_submit(
             def _rearm_hotkey(_frame=None) -> None:
                 # Re-attach after route/page changes so hotkey stays active while browsing markets.
                 try:
-                    inject_browser_hotkey_submit(page, fire_hotkey)
+                    inject_browser_hotkey_submit(page, fire_hotkey, stake_amount)
                 except Error:
                     pass
 
@@ -1072,19 +1359,21 @@ def arm_manual_submit(
                 last_submit_attempt_at_ms = None
                 _reset_latency_capture(None)
 
+                reselected = False
                 if reselect_last_market_fast(page):
+                    reselected = True
                     log("[+] Re-selected the last clicked market for repeat submission.")
-                    time.sleep(0.08)
                 elif last_market_hints and reselect_market_from_hints(page, last_market_hints):
+                    reselected = True
                     log("[+] Re-selected the captured market for repeat submission.")
-                    time.sleep(0.08)
                 else:
                     log("[!] Could not reselect the captured market automatically; watcher remains armed.")
 
-                if trigger_submit_attempt(page, "repeat-burst"):
-                    log("[+] Repeat burst submit fired on the same selection.")
+                if reselected:
+                    schedule_browser_submit_checks(page)
+                    log("[+] Repeat watcher scheduled; waiting for betslip to become submit-ready.")
                 else:
-                    log("[!] Repeat burst could not find an enabled submit button yet; watcher remains armed.")
+                    log("[!] Repeat watcher remains armed; select the market manually if needed.")
 
                 return False
 
@@ -1104,13 +1393,20 @@ def arm_manual_submit(
                             submitFiredAt: Number(window.__sb_submit_fired_at || 0),
                             submitReadyAt: Number(window.__sb_submit_ready_at || 0),
                             submitTriggerMode: String(window.__sb_submit_trigger_mode || ""),
+                            stakeSelector: String(window.__sb_last_stake_selector || ""),
+                            stakeBefore: String(window.__sb_last_stake_before || ""),
+                            stakeAfter: String(window.__sb_last_stake_after || ""),
+                            stakeApplyAt: Number(window.__sb_last_stake_apply_at || 0),
+                            stakeTarget: String(window.__sb_last_stake_target || ""),
+                            stakeNote: String(window.__sb_last_stake_note || ""),
                         })"""
                     )
 
                     ready_count = int(status.get("readyCount", 0))
                     if ready_count > last_ready_count:
+                        previous_ready_count = last_ready_count
                         last_ready_count = ready_count
-                        if not last_submit_attempt_count:
+                        if not last_submit_attempt_count and previous_ready_count == 0:
                             log("[+] Bet slip is valid; auto-submit watcher is checking for submit button availability.")
 
                     current_error = str(status.get("lastError", ""))
@@ -1131,6 +1427,13 @@ def arm_manual_submit(
                         submit_fired_at_ms = submit_fired_at_ms_raw if submit_fired_at_ms_raw > 0 else None
                         submit_ready_at_ms_raw = float(status.get("submitReadyAt", 0) or 0)
                         submit_ready_at_ms = submit_ready_at_ms_raw if submit_ready_at_ms_raw > 0 else None
+                        stake_apply_at_ms_raw = float(status.get("stakeApplyAt", 0) or 0)
+                        stake_apply_at_ms = stake_apply_at_ms_raw if stake_apply_at_ms_raw > 0 else None
+                        stake_selector = str(status.get("stakeSelector", "")).strip() or "n/a"
+                        stake_before = str(status.get("stakeBefore", "")).strip()
+                        stake_after = str(status.get("stakeAfter", "")).strip()
+                        stake_target = str(status.get("stakeTarget", "")).strip() or "n/a"
+                        stake_note = str(status.get("stakeNote", "")).strip() or "n/a"
 
                         captured_hints = capture_market_selection_hints(page)
                         if captured_hints:
@@ -1228,6 +1531,7 @@ def arm_manual_submit(
 
                         log("[Latency] ---- Attempt Breakdown ----")
                         log(f"[Latency] submit_ready_at: {_fmt_ts(submit_ready_at_ms)}")
+                        log(f"[Latency] stake_apply_at: {_fmt_ts(stake_apply_at_ms)}")
                         log(f"[Latency] hotkey_detected_at: {_fmt_ts(hotkey_seen_at_ms)}")
                         log(f"[Latency] submit_click_fired_at: {_fmt_ts(submit_fired_at_ms)}")
                         log(f"[Latency] first_api_request_at: {_fmt_ts(req_ms)}")
@@ -1249,6 +1553,10 @@ def arm_manual_submit(
                             log(f"[Latency] request: {req_method or 'n/a'} {req_url}")
                         if resp_url:
                             log(f"[Latency] response: {resp_status or 'n/a'} {resp_url}")
+                        log(
+                            f"[Debug] stake target={stake_target} before='{stake_before or 'empty'}' "
+                            f"after='{stake_after or 'empty'}' selector={stake_selector} note={stake_note}"
+                        )
 
                         if confirmed:
                             if _handle_confirmed_submission():
@@ -1407,9 +1715,114 @@ def place_fast_wager(
             safe_close_browser(browser)
 
 
+def prompt_text(label: str, default: Optional[str] = None, required: bool = False) -> str:
+    suffix = f" [{default}]" if default not in (None, "") else ""
+    while True:
+        value = input(f"{label}{suffix}: ").strip()
+        if value:
+            return value
+        if default is not None:
+            return default
+        if not required:
+            return ""
+        log("[!] This value is required.")
+
+
+def prompt_float(label: str, default: Optional[float] = None, required: bool = False) -> Optional[float]:
+    suffix = f" [{default:g}]" if default is not None else ""
+    while True:
+        raw = input(f"{label}{suffix}: ").strip()
+        if not raw and default is not None:
+            return default
+        if not raw and not required:
+            return None
+        try:
+            value = float(raw)
+        except ValueError:
+            log("[!] Enter a valid number.")
+            continue
+        if value <= 0:
+            log("[!] Enter a number greater than 0.")
+            continue
+        return value
+
+
+def prompt_int(label: str, default: int, minimum: int = 1) -> int:
+    while True:
+        raw = input(f"{label} [{default}]: ").strip()
+        if not raw:
+            return default
+        try:
+            value = int(raw)
+        except ValueError:
+            log("[!] Enter a whole number.")
+            continue
+        if value < minimum:
+            log(f"[!] Enter {minimum} or higher.")
+            continue
+        return value
+
+
+def run_interactive_menu() -> int:
+    auth_status = "found" if AUTH_STATE_PATH.exists() else "missing"
+
+    log("")
+    log("SportyBet Fast Bet")
+    log("-------------------")
+    log(f"Saved login: {auth_status} ({AUTH_STATE_PATH})")
+    log("")
+    log("1. Login / setup saved session")
+    log("2. Armed live mode: manual odds click + auto-submit")
+    log("3. One-shot selector bet")
+    log("4. Exit")
+    log("")
+
+    choice = prompt_text("Choose option", required=True)
+
+    if choice == "1":
+        setup_auth_state()
+        return 0
+
+    if choice == "2":
+        start_url = prompt_text("Start URL", default=SPORTYBET_HOME)
+        stake = prompt_float("Stake amount", default=350.0)
+        repeat_count = prompt_int("Repeat count", default=1, minimum=1)
+        repeat_delay_ms = prompt_int("Repeat delay in ms", default=150, minimum=0)
+        hotkey = prompt_text("Optional hotkey override, leave blank for auto only", default="")
+        ok = arm_manual_submit(
+            match_url=start_url,
+            stake_amount=stake,
+            fire_hotkey=(hotkey or None),
+            repeat_count=repeat_count,
+            repeat_delay_ms=repeat_delay_ms,
+        )
+        return 0 if ok else 1
+
+    if choice == "3":
+        match_url = prompt_text("Match URL", required=True)
+        target_market_selector = prompt_text("Target market selector/text", required=True)
+        stake = prompt_float("Stake amount", required=True)
+        if stake is None:
+            log("[-] Stake amount is required.")
+            return 1
+        ok = place_fast_wager(
+            match_url=match_url,
+            target_market_selector=target_market_selector,
+            stake_amount=stake,
+        )
+        return 0 if ok else 1
+
+    if choice == "4":
+        log("[+] Bye.")
+        return 0
+
+    log("[-] Unknown option.")
+    return 1
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="SportyBet fast wager automation")
-    sub = parser.add_subparsers(dest="command", required=True)
+    sub = parser.add_subparsers(dest="command", required=False)
 
     sub.add_parser("setup-auth", help="Run one-time manual auth and save auth_state.json")
 
@@ -1469,6 +1882,9 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+
+    if args.command is None:
+        return run_interactive_menu()
 
     if args.command == "setup-auth":
         setup_auth_state()
