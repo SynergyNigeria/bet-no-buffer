@@ -423,6 +423,7 @@ def inject_browser_hotkey_submit(
             win.__sb_last_stake_apply_at = 0;
             win.__sb_last_stake_target = "";
             win.__sb_last_stake_note = "";
+            win.__sb_last_button_scan_note = "";
             win.__sb_market_click_count = Number(win.__sb_market_click_count || 0);
             win.__sb_last_market_clicked_at = Number(win.__sb_last_market_clicked_at || 0);
             if (typeof win.__sb_waiting_for_next_market !== "boolean") {
@@ -435,10 +436,8 @@ def inject_browser_hotkey_submit(
                     ? Number(desiredStake)
                     : null;
 
-            const isEnabledVisible = (el) => (
+            const isVisibleOnly = (el) => (
                 el
-                && !el.disabled
-                && (el.getAttribute("aria-disabled") || "").toLowerCase() !== "true"
                 && (() => {
                     const style = window.getComputedStyle(el);
                     const rect = el.getBoundingClientRect();
@@ -451,47 +450,134 @@ def inject_browser_hotkey_submit(
                 })()
             );
 
-            const pickButton = () => {
+            const isEnabledVisible = (el) => (
+                isVisibleOnly(el)
+                && !el.disabled
+                && (el.getAttribute("aria-disabled") || "").toLowerCase() !== "true"
+                && !String(el.getAttribute("class") || "").toLowerCase().includes("disabled")
+            );
+
+            const pickButton = (allowDisabled = false) => {
+                const usable = (el) => (allowDisabled ? isVisibleOnly(el) : isEnabledVisible(el));
                 const directCandidates = [
                     "[data-testid='betslip-place-bet-button']",
                     "button[data-testid='betslip-place-bet-button']",
                     "[data-testid*='place-bet']",
+                    "[data-testid*='place' i]",
+                    "[data-testid*='submit' i]",
+                    "[data-testid*='book' i]",
+                    "[data-testid*='wager' i]",
+                    "[class*='place-bet' i]",
+                    "[class*='submit' i]",
+                    "[class*='book' i]",
+                    "[class*='wager' i]",
                     "button[type='submit']",
+                    "input[type='submit']",
+                    "input[type='button']",
                 ];
 
                 for (const sel of directCandidates) {
                     const el = document.querySelector(sel);
-                    if (isEnabledVisible(el)) return el;
+                    if (usable(el)) return el;
                 }
 
-                const textMatchers = ["place bet", "confirm bet", "confirm", "place"];
+                const textMatchers = [
+                    "place bet",
+                    "place bets",
+                    "place wager",
+                    "submit bet",
+                    "bet now",
+                    "book bet",
+                    "book",
+                    "wager",
+                    "play",
+                    "play now",
+                    "confirm bet",
+                    "confirm",
+                    "place",
+                ];
 
                 // Prefer buttons inside likely betslip containers.
                 const containerSelectors = [
                     "[data-testid*='betslip']",
                     "[class*='betslip']",
                     "[id*='betslip']",
+                    "[data-testid*='bet-slip' i]",
+                    "[class*='bet-slip' i]",
+                    "[id*='bet-slip' i]",
+                    "[data-testid*='slip' i]",
+                    "[class*='slip' i]",
+                    "[id*='slip' i]",
+                    "[data-testid*='coupon' i]",
+                    "[class*='coupon' i]",
+                    "[id*='coupon' i]",
+                    "[data-testid*='ticket' i]",
+                    "[class*='ticket' i]",
+                    "[id*='ticket' i]",
+                    "[data-testid*='booking' i]",
+                    "[class*='booking' i]",
+                    "[id*='booking' i]",
                 ];
 
                 for (const csel of containerSelectors) {
                     const container = document.querySelector(csel);
                     if (!container) continue;
-                    const buttons = Array.from(container.querySelectorAll("button"));
+                    const buttons = Array.from(container.querySelectorAll(
+                        "button, [role='button'], a, input[type='button'], input[type='submit'], div, span"
+                    ));
                     for (const btn of buttons) {
-                        const text = (btn.textContent || "").trim().toLowerCase();
-                        if (!text) continue;
-                        if (!isEnabledVisible(btn)) continue;
-                        if (textMatchers.some((m) => text.includes(m))) return btn;
+                        const text = (
+                            btn.textContent
+                            || btn.value
+                            || btn.getAttribute("aria-label")
+                            || btn.getAttribute("title")
+                            || ""
+                        ).trim().toLowerCase();
+                        const attrs = [
+                            btn.getAttribute("data-testid") || "",
+                            btn.getAttribute("class") || "",
+                            btn.getAttribute("id") || "",
+                            btn.getAttribute("role") || "",
+                            btn.getAttribute("type") || "",
+                        ].join(" ").toLowerCase();
+                        if (!usable(btn)) continue;
+                        if (text && textMatchers.some((m) => text.includes(m))) return btn;
+                        if (
+                            (attrs.includes("place") || attrs.includes("submit") || attrs.includes("book") || attrs.includes("wager"))
+                            && (attrs.includes("button") || attrs.includes("btn") || attrs.includes("submit"))
+                        ) {
+                            return btn;
+                        }
                     }
                 }
 
                 // Last fallback to full page search.
-                const allButtons = Array.from(document.querySelectorAll("button"));
+                const allButtons = Array.from(document.querySelectorAll(
+                    "button, [role='button'], a, input[type='button'], input[type='submit'], div, span"
+                ));
                 for (const btn of allButtons) {
-                    const text = (btn.textContent || "").trim().toLowerCase();
-                    if (!text) continue;
-                    if (!isEnabledVisible(btn)) continue;
-                    if (textMatchers.some((m) => text.includes(m))) return btn;
+                    const text = (
+                        btn.textContent
+                        || btn.value
+                        || btn.getAttribute("aria-label")
+                        || btn.getAttribute("title")
+                        || ""
+                    ).trim().toLowerCase();
+                    const attrs = [
+                        btn.getAttribute("data-testid") || "",
+                        btn.getAttribute("class") || "",
+                        btn.getAttribute("id") || "",
+                        btn.getAttribute("role") || "",
+                        btn.getAttribute("type") || "",
+                    ].join(" ").toLowerCase();
+                    if (!usable(btn)) continue;
+                    if (text && textMatchers.some((m) => text.includes(m))) return btn;
+                    if (
+                        (attrs.includes("place") || attrs.includes("submit") || attrs.includes("book") || attrs.includes("wager"))
+                        && (attrs.includes("button") || attrs.includes("btn") || attrs.includes("submit"))
+                    ) {
+                        return btn;
+                    }
                 }
 
                 return null;
@@ -537,8 +623,9 @@ def inject_browser_hotkey_submit(
             };
             const looksLikeSubmit = (el) => {
                 const text = normalizeText(el.innerText || el.textContent || "");
-                if (text.includes("place bet") || text.includes("confirm")) return true;
-                if (text === "place" || text === "accept" || text === "continue") return true;
+                if (text.includes("place bet") || text.includes("submit bet") || text.includes("bet now")) return true;
+                if (text.includes("confirm")) return true;
+                if (text === "place" || text === "accept" || text === "continue" || text === "bet") return true;
                 const attrs = [
                     el.getAttribute("data-testid") || "",
                     el.getAttribute("class") || "",
@@ -546,19 +633,70 @@ def inject_browser_hotkey_submit(
                 ].join(" ").toLowerCase();
                 return attrs.includes("place-bet") || attrs.includes("submit");
             };
-            const onMarketClick = (ev) => {
-                const raw = ev.target;
-                if (!raw || !raw.closest) return;
-                const el = raw.closest([
+            const scoreMarketElement = (el) => {
+                if (!el || el === document.documentElement || el === document.body) return 0;
+                if (isInsideBetSlip(el) || looksLikeSubmit(el)) return 0;
+                const attrs = [
+                    el.getAttribute("data-testid") || "",
+                    el.getAttribute("data-odds-id") || "",
+                    el.getAttribute("data-outcome-id") || "",
+                    el.getAttribute("data-selection-id") || "",
+                    el.getAttribute("data-market-id") || "",
+                    el.getAttribute("class") || "",
+                    el.getAttribute("id") || "",
+                    el.getAttribute("aria-label") || "",
+                    el.getAttribute("title") || "",
+                    el.getAttribute("role") || "",
+                ].join(" ").toLowerCase();
+                let score = 0;
+                if (attrs.includes("odd") || attrs.includes("odds")) score += 20;
+                if (attrs.includes("outcome")) score += 18;
+                if (attrs.includes("selection")) score += 16;
+                if (attrs.includes("market")) score += 10;
+                if (attrs.includes("price") || attrs.includes("coefficient") || attrs.includes("coef")) score += 8;
+                if (attrs.includes("event") || attrs.includes("match")) score += 4;
+                if (el.tagName === "BUTTON" || attrs.includes("button")) score += 3;
+                const text = normalizeText(el.innerText || el.textContent || "");
+                if (/\\b\\d+(\\.\\d{1,3})?\\b/.test(text)) score += 4;
+                return score;
+            };
+            const findMarketElement = (raw) => {
+                if (!raw || !raw.closest) return null;
+                const direct = raw.closest([
                     "[data-odds-id]",
+                    "[data-outcome-id]",
+                    "[data-selection-id]",
+                    "[data-market-id]",
                     "[data-testid*='odd' i]",
                     "[class*='odd' i]",
+                    "[data-testid*='outcome' i]",
+                    "[class*='outcome' i]",
+                    "[data-testid*='selection' i]",
+                    "[class*='selection' i]",
                     "[data-testid*='market' i]",
                     "[class*='market' i]",
+                    "[class*='price' i]",
+                    "[class*='coef' i]",
                     "button",
                     "[role='button']",
                     "a",
                 ].join(","));
+                if (direct && scoreMarketElement(direct) > 0) return direct;
+
+                let best = null;
+                let bestScore = 0;
+                let el = raw;
+                for (let depth = 0; el && depth < 8; depth += 1, el = el.parentElement) {
+                    const score = scoreMarketElement(el);
+                    if (score > bestScore) {
+                        best = el;
+                        bestScore = score;
+                    }
+                }
+                return bestScore > 0 ? best : null;
+            };
+            const onMarketClick = (ev) => {
+                const el = findMarketElement(ev.target);
                 if (!el || isInsideBetSlip(el) || looksLikeSubmit(el)) return;
 
                 win.__sb_market_click_count = Number(win.__sb_market_click_count || 0) + 1;
@@ -585,7 +723,6 @@ def inject_browser_hotkey_submit(
                 }
                 return null;
             };
-
             const applyConfiguredStake = () => {
                 if (configuredStake === null) return true;
                 const stakeSelectors = [
@@ -768,16 +905,21 @@ def inject_browser_hotkey_submit(
 
             const autoWatch = () => {
                 if (win.__sb_submit_fired) return;
-                if (win.__sb_waiting_for_next_market) return;
-                if (win.__sb_last_market_clicked_at && Date.now() - win.__sb_last_market_clicked_at < 80) return;
-                const btn = markReady();
-                if (btn) {
-                    if (!applyConfiguredStake()) {
-                        win.__sb_last_submit_error = `Stake not ready; wanted ${configuredStake}, saw ${win.__sb_last_stake_after || "n/a"}.`;
-                        return;
-                    }
-                    fireSubmit(btn, "auto-watch");
+                if (win.__sb_waiting_for_next_market) {
+                    return;
                 }
+                if (win.__sb_last_market_clicked_at && Date.now() - win.__sb_last_market_clicked_at < 80) return;
+                if (!applyConfiguredStake()) {
+                    win.__sb_last_submit_error = `Stake not ready; wanted ${configuredStake}, saw ${win.__sb_last_stake_after || "n/a"}.`;
+                    return;
+                }
+                const btn = markReady();
+                if (!btn) {
+                    win.__sb_last_button_scan_note = "no-enabled-submit-control-after-stake";
+                    win.__sb_last_submit_error = "Stake is ready, but no enabled submit button/control was found.";
+                    return;
+                }
+                fireSubmit(btn, "auto-watch");
             };
 
             if (hotkeyValue) {
